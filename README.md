@@ -1,1 +1,3 @@
-# trying_out_epoll
+# epollを使ってみる
+
+自分のための学習用コードです。
