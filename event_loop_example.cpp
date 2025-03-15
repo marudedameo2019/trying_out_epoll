@@ -6,6 +6,7 @@
 #include <map>
 #include <unordered_map>
 #include <utility>
+#include <string_view>
 #include <sys/eventfd.h>
 #include <sys/epoll.h>
 #include <unistd.h>
@@ -14,9 +15,9 @@ class file_descriptor {
 public:
     constexpr static int INVALID = -1;
     file_descriptor(int fd = INVALID): fd_(fd) {}
-    file_descriptor(file_descriptor &&org): fd_(org.fd_) {org.fd_ = INVALID;}
+    file_descriptor(file_descriptor &&org) noexcept: fd_(org.fd_) {org.fd_ = INVALID;}
     file_descriptor(const file_descriptor &org) = delete;
-    file_descriptor &operator=(file_descriptor &&org) {
+    file_descriptor &operator=(file_descriptor &&org) noexcept {
         if (this != &org) {
             this->~file_descriptor();
             this->fd_ = org.fd_;
@@ -41,20 +42,21 @@ class epoll {
     auto &operator=(const epoll &) = delete;
     auto &operator=(epoll &&) = delete;
     int ctl(int fd, int op, uint32_t events) {
-        epoll_event ev;
+        epoll_event ev{};
         ev.events = events;
         ev.data.fd = fd;
         return epoll_ctl(this->fd_, op, fd, &ev);
     }
 public:
     epoll(): fd_(epoll_create1(0)), events_(MAX_EVENTS) {}
+    ~epoll() {}
     operator bool() {return static_cast<int>(this->fd_) != file_descriptor::INVALID;}
     int ctl_add(int fd, uint32_t events){return ctl(fd, EPOLL_CTL_ADD, events);}
     int ctl_mod(int fd, uint32_t events){return ctl(fd, EPOLL_CTL_MOD, events);}
     int ctl_del(int fd, uint32_t events){return ctl(fd, EPOLL_CTL_DEL, events);}
     int wait(int timeout) {
         this->events_.resize(MAX_EVENTS);
-        auto len = epoll_wait(this->fd_, this->events_.data(), this->events_.size(), timeout);
+        auto len = epoll_wait(this->fd_, this->events_.data(), static_cast<int>(this->events_.size()), timeout);
         this->events_.resize(len < 0 ? 0 : len);
         return len;
     }
@@ -67,13 +69,13 @@ class event_loop {
     std::map<std::chrono::high_resolution_clock::time_point, std::function<void()>> time2fnc;
     std::unordered_map<int, std::function<void(int)>> fd2func;
     union buff8bytes {
-        char bytes[8];
+        char bytes[8]; // NOLINT(cppcoreguidelines-avoid-magic-numbers,cppcoreguidelines-avoid-c-arrays)
         uint64_t value;
     };
     void interrupt() {
-        buff8bytes buff;
-        buff.value = 1;
-        write(this->fd_, &buff.bytes[0], sizeof(buff.bytes));
+        buff8bytes buff; // NOLINT(cppcoreguidelines-pro-type-member-init)
+        buff.value = 1; // NOLINT(cppcoreguidelines-pro-type-union-access)
+        write(this->fd_, &buff.bytes[0], sizeof(buff.bytes)); // NOLINT(cppcoreguidelines-pro-type-union-access)
         // epoll_waitを止めるための特殊な書き込みなので結果を無視する
     }
 public:
@@ -114,12 +116,12 @@ public:
                 it = this->time2fnc.begin();
             }
             auto ms = (it == this->time2fnc.end()) ? -1 : duration_cast<milliseconds>(it->first - t).count();
-            auto len = this->ep_.wait(ms);
+            auto len = this->ep_.wait(static_cast<int>(ms));
             if (len > 0) {
                 for (const auto &e : this->ep_.events()) {
                     if (e.data.fd == this->fd_) {
-                        buff8bytes buff;
-                        read(e.data.fd, &buff.bytes[0], sizeof(buff.bytes));
+                        buff8bytes buff{};
+                        read(e.data.fd, &buff.bytes[0], sizeof(buff.bytes)); // NOLINT(cppcoreguidelines-pro-type-union-access)
                         // カウンタをクリアするための特殊な読み込みなので結果を無視する
                     } else {
                         this->fd2func[e.data.fd](e.data.fd);
@@ -143,7 +145,7 @@ int main() {
         auto len = read(fd, buff.data(), buff.size());
         buff.resize(len < 0 ? 0 : len);
         cout << "read(): ";
-        cout.write(buff.data(), buff.size());
+        cout.write(buff.data(), static_cast<streamsize>(buff.size()));
         cout << "\n" << endl;
         if (string(buff.data(), buff.size()) == "stop\n") {
             loop.stop();
@@ -159,19 +161,19 @@ int main() {
     };
     loop.set_timeout(on_timeout, WAIT_TIME_MS);
     function<void()> on_draw = [&loop,&on_draw,&t]()->void {
-        static const char pre_line[] = {"\x1b[s\x1b[1A\r"};
-        static const char post_line[] = {"\x1b[u"};
-        static const char* rest_chars[] = {" ", "\u258F", "\u258E", "\u258D", "\u258C", "\u258B", "\u258A", "\u2589"};
+        static constexpr string_view pre_line = "\x1b[s\x1b[1A\r";
+        static constexpr string_view post_line = "\x1b[u";
+        static constexpr array<string_view, 8> rest_chars = {" ", "\u258F", "\u258E", "\u258D", "\u258C", "\u258B", "\u258A", "\u2589"};
         auto t2 = high_resolution_clock::now();
         auto ms = duration_cast<milliseconds>(t2-t).count();
         constexpr int width100 = 80;
-        auto char8size = ms * width100 * 8 / WAIT_TIME_MS;
-        auto chars = char8size >> 3;
-        auto rest = char8size & ((1<<3)-1);
+        auto char8size = ms * width100 * static_cast<int>(rest_chars.size()) / WAIT_TIME_MS;
+        auto chars = char8size / static_cast<int>(rest_chars.size());
+        auto rest = char8size % static_cast<int>(rest_chars.size());
         cout << pre_line;
         for (int i = 0; i < chars; ++i)
             cout << "\u2588";
-        cout << rest_chars[rest];
+        cout << rest_chars.at(rest);
         cout << ms << "[ms]";
         cout << post_line;
         cout.flush();
